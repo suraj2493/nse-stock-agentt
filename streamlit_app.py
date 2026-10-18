@@ -1,162 +1,129 @@
-import numpy as np
-import pandas as pd
-import plotly.graph_objects as go
 import streamlit as st
+import pandas as pd
+import numpy as np
 import yfinance as yf
 
-# Page Config
+# Page Configuration
 st.set_page_config(
-    page_title="NSE Stock Technical Engine", page_icon="📈", layout="wide"
+    page_title="NSE Stock Analyzer",
+    page_icon="📈",
+    layout="wide"
 )
 
-st.title("📈 NSE Stock Technical Engine & Risk Calculator")
-st.caption(
-    "100% Free & Open-Source (No LLM or API keys required) | Data source: NSE via"
-    " yfinance"
+st.title("🇮🇳 NSE Smart Stock Analyzer")
+st.markdown("Analyze any NSE-listed stock using its complete historical data to calculate **Buying Prices, Targets, and Stoploss** levels.")
+
+# Sidebar Controls
+st.sidebar.header("Configuration")
+stock_input = st.sidebar.text_input("Enter NSE Ticker Symbol:", value="RELIANCE").strip().upper()
+
+# Automatically append .NS if user forgot it
+if not stock_input.endswith(".NS") and not stock_input.endswith(".BO"):
+    ticker_symbol = f"{stock_input}.NS"
+else:
+    ticker_symbol = stock_input
+
+timeframe = st.sidebar.selectbox(
+    "Select Historical Data Horizon:",
+    ["Max (All Past Data)", "5 Years", "2 Years", "1 Year"],
+    index=0
 )
 
+# Map timeframe to yfinance period
+period_map = {
+    "Max (All Past Data)": "max",
+    "5 Years": "5y",
+    "2 Years": "2y",
+    "1 Year": "1y"
+}
 
-def analyze_stock(symbol: str):
-  clean_symbol = symbol.strip().upper().replace(".NS", "")
-  nse_symbol = f"{clean_symbol}.NS"
+@st.cache_data(ttl=3600)
+def load_stock_data(ticker, period):
+    try:
+        df = yf.download(ticker, period=period, auto_adjust=True)
+        if df.empty:
+            return None
+        # Handle multi-index columns if returned by newer yfinance versions
+        if isinstance(df.columns, pd.MultiIndex):
+            df.columns = df.columns.get_level_values(0)
+        return df
+    except Exception as e:
+        return None
 
-  ticker = yf.Ticker(nse_symbol)
-  df = ticker.history(period="6mo")
-
-  if df.empty:
-    return None, f"Could not fetch data for NSE Ticker '{clean_symbol}'."
-
-  # Current Market Price
-  cmp = round(float(df["Close"].iloc[-1]), 2)
-
-  # Technical Calculations
-  df["H-L"] = df["High"] - df["Low"]
-  df["H-PC"] = abs(df["High"] - df["Close"].shift(1))
-  df["L-PC"] = abs(df["Low"] - df["Close"].shift(1))
-  df["TR"] = df[["H-L", "H-PC", "L-PC"]].max(axis=1)
-  df["ATR"] = df["TR"].rolling(14).mean()
-  atr = round(
-      float(df["ATR"].iloc[-1])
-      if not pd.isna(df["ATR"].iloc[-1])
-      else cmp * 0.02,
-      2,
-  )
-
-  df["SMA_20"] = df["Close"].rolling(20).mean()
-  df["SMA_50"] = df["Close"].rolling(50).mean()
-  sma_20 = round(float(df["SMA_20"].iloc[-1]), 2)
-  sma_50 = round(float(df["SMA_50"].iloc[-1]), 2)
-
-  delta = df["Close"].diff()
-  gain = (delta.where(delta > 0, 0)).rolling(14).mean()
-  loss = (-delta.where(delta < 0, 0)).rolling(14).mean()
-  rs = gain / loss
-  rsi = round(float((100 - (100 / (1 + rs))).iloc[-1]), 2)
-
-  # Risk Logic
-  stop_loss = round(cmp - (1.5 * atr), 2)
-  risk = cmp - stop_loss
-  target_1 = round(cmp + (1.5 * risk), 2)
-  target_2 = round(cmp + (2.5 * risk), 2)
-
-  if cmp > sma_20 and rsi >= 45 and rsi <= 70:
-    action = "BUY / ACCUMULATE"
-    action_color = "green"
-  elif cmp < sma_20 and rsi < 40:
-    action = "AVOID / BEARISH"
-    action_color = "red"
-  else:
-    action = "HOLD / NEUTRAL"
-    action_color = "orange"
-
-  return {
-      "symbol": clean_symbol,
-      "cmp": cmp,
-      "atr": atr,
-      "sma_20": sma_20,
-      "sma_50": sma_50,
-      "rsi": rsi,
-      "stop_loss": stop_loss,
-      "target_1": target_1,
-      "target_2": target_2,
-      "action": action,
-      "action_color": action_color,
-      "df": df,
-  }, None
-
-
-# UI Layout
-symbol_input = st.sidebar.text_input(
-    "Enter NSE Ticker Symbol:", value="RELIANCE"
-)
-
-st.sidebar.markdown("**Quick Presets:**")
-cols = st.sidebar.columns(2)
-if cols[0].button("RELIANCE"):
-  symbol_input = "RELIANCE"
-if cols[1].button("TCS"):
-  symbol_input = "TCS"
-
-if st.sidebar.button("Run Technical Analysis", type="primary"):
-  with st.spinner("Analyzing market data..."):
-    result, error = analyze_stock(symbol_input)
-
-    if error:
-      st.error(error)
+# Fetch Data Button
+if st.sidebar.button("Run Analysis", type="primary"):
+    with st.spinner(f"Fetching historical data for {ticker_symbol}..."):
+        data = load_stock_data(ticker_symbol, period_map[timeframe])
+        
+    if data is None or len(data) < 30:
+        st.error(f"Could not retrieve valid data for `{ticker_symbol}`. Please check if the NSE symbol is correct (e.g., `TCS`, `INFY`, `TATAMOTORS`).")
     else:
-      st.subheader(f"Analysis for NSE: {result['symbol']}")
+        st.success(f"Successfully loaded {len(data)} rows of past trading data!")
+        
+        # Calculations
+        current_price = float(data['Close'].iloc[-1])
+        prev_close = float(data['Close'].iloc[-2])
+        price_change = current_price - prev_close
+        pct_change = (price_change / prev_close) * 100
+        
+        # Moving averages
+        data['SMA_50'] = data['Close'].rolling(window=50).mean()
+        data['SMA_200'] = data['Close'].rolling(window=200).mean()
+        
+        # Volatility (ATR Approximation using High-Low)
+        data['HL_Diff'] = data['High'] - data['Low']
+        atr = float(data['HL_Diff'].rolling(window=14).mean().iloc[-1])
+        
+        sma_50 = float(data['SMA_50'].iloc[-1]) if not np.isnan(data['SMA_50'].iloc[-1]) else current_price
+        sma_200 = float(data['SMA_200'].iloc[-1]) if not np.isnan(data['SMA_200'].iloc[-1]) else current_price
 
-      m1, m2, m3, m4 = st.columns(4)
-      m1.metric("Current Market Price (CMP)", f"₹{result['cmp']}")
-      m2.metric("Signal", result["action"])
-      m3.metric("Stop Loss (SL)", f"₹{result['stop_loss']}")
-      m4.metric("Targets (T1 / T2)", f"₹{result['target_1']} / ₹{result['target_2']}")
+        # Strategic Levels Calculation (Swing Trading Setup)
+        # Stoploss placed safely below recent volatility or 50 SMA
+        stop_loss = round(current_price - (1.5 * atr), 2)
+        # Buying Price recommendation near support/current levels
+        buy_price_ideal = round(current_price * 0.985, 2) # Slight dip entry or current
+        # Target calculations based on Risk-Reward Ratio (1:2)
+        risk = current_price - stop_loss
+        target_1 = round(current_price + (risk * 1.5), 2)
+        target_2 = round(current_price + (risk * 2.5), 2)
 
-      st.markdown("---")
+        # Metrics Overview
+        st.markdown("---")
+        col1, col2, col3, col4 = st.columns(4)
+        col1.metric("Current Price", f"₹{current_price:.2f}", f"{pct_change:+.2f}%")
+        col2.metric("50-Day SMA", f"₹{sma_50:.2f}")
+        col3.metric("200-Day SMA", f"₹{sma_200:.2f}")
+        col4.metric("Average True Range (14)", f"₹{atr:.2f}")
 
-      col_a, col_b = st.columns(2)
-      with col_a:
-        st.write("### 📊 Technical Indicators")
-        st.write(f"• **14-day ATR (Volatility):** ₹{result['atr']}")
-        st.write(f"• **20-day SMA:** ₹{result['sma_20']}")
-        st.write(f"• **50-day SMA:** ₹{result['sma_50']}")
-        st.write(f"• **14-day RSI:** {result['rsi']}")
+        # Action Plan Section
+        st.markdown("### 🎯 Automated Trade Setup (AI / Technical Guardrails)")
+        
+        t_col1, t_col2, t_col3 = st.columns(3)
+        with t_col1:
+            st.info(f"**Recommended Buy Zone**\n\n ₹{buy_price_ideal} – ₹{current_price:.2f}\n*(Accumulate on dips)*")
+        with t_col2:
+            st.warning(f"**Stoploss (Risk Control)**\n\n ₹{stop_loss}\n*(Exit if price breaks below this support)*")
+        with t_col3:
+            st.success(f"**Target Prices**\n\n **T1:** ₹{target_1}\n **T2:** ₹{target_2}\n*(Book partial profits here)*")
 
-      with col_b:
-        st.write("### 🎯 Risk-Management Levels")
-        st.write(f"• **Recommended Buy Price:** ₹{result['cmp']}")
-        st.write(f"• **Stop-Loss Level:** ₹{result['stop_loss']}")
-        st.write(f"• **Target 1 (1:1.5 Risk-Reward):** ₹{result['target_1']}")
-        st.write(f"• **Target 2 (1:2.5 Risk-Reward):** ₹{result['target_2']}")
+        # Visualizing past data using Native Streamlit Charts
+        st.markdown("---")
+        st.subheader("📊 Complete Historical Price & Trend Analysis")
+        
+        chart_data = pd.DataFrame({
+            'Close Price': data['Close'],
+            '50 SMA': data['SMA_50'],
+            '200 SMA': data['SMA_200']
+        }).dropna()
+        
+        st.line_chart(chart_data)
 
-      st.write("### 📈 Technical Price Chart")
-      df = result["df"]
-      fig = go.Figure()
-      fig.add_trace(
-          go.Candlestick(
-              x=df.index,
-              open=df["Open"],
-              high=df["High"],
-              low=df["Low"],
-              close=df["Close"],
-              name="Price",
-          )
-      )
-      fig.add_hline(
-          y=result["stop_loss"],
-          line_dash="dash",
-          line_color="red",
-          annotation_text="Stop Loss",
-      )
-      fig.add_hline(
-          y=result["target_1"],
-          line_dash="dash",
-          line_color="green",
-          annotation_text="Target 1",
-      )
-      fig.update_layout(
-          template="plotly_dark",
-          height=450,
-          margin=dict(l=20, r=20, t=20, b=20),
-      )
-      st.plotly_chart(fig, use_container_width=True)
+        # Volume Chart
+        st.subheader("📉 Historical Trading Volume")
+        st.bar_chart(data['Volume'])
+
+        # Raw Table View
+        with st.expander("View Raw Historical Data Table"):
+            st.dataframe(data.sort_index(ascending=False))
+else:
+    st.info("👈 Enter an NSE ticker on the left sidebar (e.g., `RELIANCE`, `TCS`, `INFY`) and click **Run Analysis**.")
